@@ -107,25 +107,24 @@
   async function ensureTesseractLib() {
     if (tesseractLibLoaded) return;
 
-    // 优先：content_scripts 已加载 tesseract.min.js，全局 Tesseract 直接可用
+    // 检查全局 Tesseract（可能被其他方式加载）
     if (typeof Tesseract !== 'undefined') {
       tesseractLibLoaded = true;
-      logInfo('Tesseract 库已就绪（content_scripts 预加载）');
+      logInfo('Tesseract 库已就绪（全局变量）');
       return;
     }
 
-    // 备选：动态加载（可能被页面 CSP 阻止 eval）
-    logStep('动态加载 tesseract.js 库...');
+    // ES Module 动态 import — 不依赖 eval，CSP 友好
+    logStep('ESM 动态加载 tesseract.js...');
     try {
-      const url = chrome.runtime.getURL('lib/tesseract.min.js');
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`fetch 失败: HTTP ${resp.status}`);
-      const code = await resp.text();
-      eval(code);
+      const url = chrome.runtime.getURL('lib/tesseract.esm.min.js');
+      const mod = await import(url);
+      // ESM build 导出的 Tesseract
+      window.Tesseract = mod.default || mod.Tesseract || mod;
       tesseractLibLoaded = true;
-      logStep('tesseract.js 库加载完成（动态加载）');
+      logStep('tesseract.js ESM 加载完成');
     } catch (e) {
-      logError(`Tesseract 库加载失败: ${e.message}（可能是 CSP 阻止了 eval）`);
+      logError(`Tesseract ESM 加载失败: ${e.message}`);
       throw e;
     }
   }
