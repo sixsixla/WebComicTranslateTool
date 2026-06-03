@@ -452,12 +452,15 @@
    * 步骤4: 通过 background worker 翻译
    */
   function translateText(text) {
+    // Tesseract 语言代码 → Google Translate 语言代码映射
+    const langMap = { jpn: 'ja', eng: 'en', chi_sim: 'zh-CN', kor: 'ko' };
+    const translateSource = langMap[config.sourceLang] || 'ja';
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         {
           type: 'translate',
           text: text,
-          sourceLang: 'ja',
+          sourceLang: translateSource,
           targetLang: config.targetLang,
         },
         (response) => {
