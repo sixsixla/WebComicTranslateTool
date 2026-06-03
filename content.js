@@ -405,48 +405,90 @@
     });
   }
 
+  // ==================== 调试工具 ====================
+
+  // 是否处于 OCR 已就绪的状态（Step 3 集成后设为 true）
+  const OCR_READY = false;
+
+  /**
+   * 在 canvas 上绘制检测到的文字区域框（调试用）
+   */
+  function drawDebugRegions(ctx, regions) {
+    const colors = ['#ff0000', '#00ff00', '#0000ff', '#ff8800', '#ff00ff', '#00ffff'];
+    regions.forEach((region, i) => {
+      const color = colors[i % colors.length];
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(region.x, region.y, region.width, region.height);
+
+      // 绘制序号标签
+      ctx.fillStyle = color;
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(`#${i + 1}`, region.x + 2, region.y + 14);
+    });
+    console.log(`[WebComicTranslate] 检测到 ${regions.length} 个文字区域`, regions);
+  }
+
   // ==================== 对外接口 ====================
 
   /**
    * 处理单张图片的完整流水线
-   * 这是将来集成 OCR 和翻译后的主入口
    */
   async function processImage(img) {
     if (!config.enabled) return;
 
     // 步骤1: 获取图片数据
+    console.log('[WebComicTranslate] Step 1: 捕获图片...');
     const { canvas, ctx, imageData, width, height } = await imageToImageData(img);
+    console.log(`[WebComicTranslate] 图片尺寸: ${width}x${height}`);
 
     // 步骤2: 检测文字区域
+    console.log('[WebComicTranslate] Step 2: 检测文字区域...');
     const regions = detectTextRegions(imageData);
-    if (regions.length === 0) return; // 没有检测到文字区域
+    if (regions.length === 0) {
+      console.log('[WebComicTranslate] 未检测到文字区域');
+      return;
+    }
 
-    // 步骤3: 对每个区域进行 OCR（当前先用占位符）
+    // 如果 OCR 未就绪，仅绘制调试框
+    if (!OCR_READY) {
+      console.log('[WebComicTranslate] OCR 未集成，显示检测结果调试框');
+      drawDebugRegions(ctx, regions);
+
+      canvas.style.width = img.style.width || img.width + 'px';
+      canvas.style.height = img.style.height || img.height + 'px';
+      canvas.style.maxWidth = '100%';
+      canvas.classList.add('webcomic-translated');
+      img.replaceWith(canvas);
+      return;
+    }
+
+    // 步骤3: 对每个区域进行 OCR
     // TODO: 集成 Tesseract.js OCR
     const ocrResults = regions.map((region, i) => ({
       region: region,
       text: `text_${i}`, // 占位，后续替换为 OCR 结果
     }));
 
-    // 步骤4: 翻译
+    // 步骤4: 翻译 + 步骤5: 擦除渲染
     for (const result of ocrResults) {
       if (result.text) {
         try {
           result.translated = await translateText(result.text);
         } catch (e) {
           console.warn('翻译失败:', e);
-          result.translated = result.text; // 翻译失败保留原文
+          result.translated = result.text;
         }
       }
-      // 采样背景色并擦除+渲染
-      // 注意：这部分需要等 OCR 集成后才能正确工作
+      const bgColor = sampleBackgroundColor(imageData, result.region);
+      renderTranslation(ctx, result.region, result.translated || result.text, bgColor);
     }
 
-    // 步骤5: 替换图片
-    // 当前：如果检测到区域，用 canvas 替换 img
+    // 步骤6: 替换图片
     canvas.style.width = img.style.width || img.width + 'px';
     canvas.style.height = img.style.height || img.height + 'px';
     canvas.style.maxWidth = '100%';
+    canvas.classList.add('webcomic-translated');
     img.replaceWith(canvas);
   }
 
