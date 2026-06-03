@@ -23,7 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // 发送消息的封装，带超时
-  async function sendToTab(type, timeout = 5000) {
+  async function sendToTab(type, timeout = 60000) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('请求超时，Content Script 未响应')), timeout);

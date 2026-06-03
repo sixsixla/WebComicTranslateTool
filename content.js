@@ -261,8 +261,9 @@
     const { width, height, data } = imageData;
     const regions = [];
 
-    // 简化方案：用滑动窗口检测包含高对比度像素的区域
-    const blockSize = 32;
+    // 针对漫画优化参数：更大块、更高阈值、限制最大区域数
+    const blockSize = 40;
+    const MAX_REGIONS = 60;
     const visited = new Uint8Array(Math.ceil(width / blockSize) * Math.ceil(height / blockSize));
 
     for (let by = 0; by < height; by += blockSize) {
@@ -270,8 +271,6 @@
         const blockIdx = Math.floor(by / blockSize) * Math.ceil(width / blockSize) + Math.floor(bx / blockSize);
         if (visited[blockIdx]) continue;
 
-        // 统计块内亮度方差，文字区域通常有较大的局部方差
-        let sumVariance = 0;
         let pixelCount = 0;
         const blockEndY = Math.min(by + blockSize, height);
         const blockEndX = Math.min(bx + blockSize, width);
@@ -279,35 +278,34 @@
         for (let y = by; y < blockEndY; y++) {
           for (let x = bx; x < blockEndX; x++) {
             const idx = (y * width + x) * 4;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-            // 累积灰度值（简化为统计是否有足够暗的像素）
-            if (gray < 80) { // 深色像素（可能是文字）
-              pixelCount++;
-            }
+            const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+            if (gray < 80) { pixelCount++; }
           }
         }
 
-        // 如果深色像素占比合适（超过5%，少于60%），认为是文字区域
         const totalPixels = (blockEndY - by) * (blockEndX - bx);
         const darkRatio = pixelCount / totalPixels;
 
-        if (darkRatio > 0.02 && darkRatio < 0.6) {
-          // 扩展区域边界
+        // 收紧阈值：5%-50%（原2%-60%太宽，产生大量误检）
+        if (darkRatio > 0.05 && darkRatio < 0.5) {
           const region = expandTextRegion(imageData, bx, by, blockEndX, blockEndY);
           if (region) {
             regions.push(region);
-            // 标记附近块为已访问
             markVisitedBlocks(visited, region, blockSize, width);
           }
         }
       }
     }
 
-    // 合并重叠区域
-    return mergeOverlappingRegions(regions);
+    // 合并重叠区域，按面积排序，限制最大数量
+    let merged = mergeOverlappingRegions(regions);
+    merged.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+    if (merged.length > MAX_REGIONS) {
+      logWarn(`区域过多 (${merged.length})，截断到前 ${MAX_REGIONS} 个（按面积）`);
+      merged = merged.slice(0, MAX_REGIONS);
+    }
+
+    return merged;
   }
 
   function expandTextRegion(imageData, startX, startY, endX, endY) {
