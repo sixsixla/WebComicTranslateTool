@@ -4,6 +4,31 @@
 (function () {
   'use strict';
 
+  // ==================== 远程日志（本地调试用） ====================
+  const LOG_SERVER = 'http://localhost:8765/log';
+  const LOG_ENABLED = true;
+
+  function remoteLog(level, msg) {
+    if (!LOG_ENABLED) return;
+    try {
+      fetch(LOG_SERVER, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level, msg: String(msg) }),
+      }).catch(() => {}); // 静默失败，服务器没开也不影响
+    } catch (e) {}
+  }
+
+  function logInfo(msg)  { console.log('[WCT]', msg);  remoteLog('INFO', msg); }
+  function logWarn(msg)  { console.warn('[WCT]', msg); remoteLog('WARN', msg); }
+  function logError(msg) { console.error('[WCT]', msg); remoteLog('ERROR', msg); }
+  function logStep(msg)  { console.log('[WCT]', msg);  remoteLog('STEP', msg); }
+
+  // 全局异常捕获
+  window.addEventListener('error', (e) => {
+    remoteLog('FATAL', `全局异常: ${e.message} @ ${e.filename}:${e.lineno}`);
+  });
+
   // ==================== 页内状态提示器 ====================
 
   let statusEl = null;
@@ -85,13 +110,13 @@
       tesseractLibLoaded = true;
       return;
     }
-    console.log('[WebComicTranslate] 加载 tesseract.js 库...');
+    logStep('加载 tesseract.js 库...');
     const url = chrome.runtime.getURL('lib/tesseract.min.js');
     const resp = await fetch(url);
     const code = await resp.text();
     eval(code);
     tesseractLibLoaded = true;
-    console.log('[WebComicTranslate] tesseract.js 库加载完成');
+    logStep('tesseract.js 库加载完成');
   }
 
   /**
@@ -106,7 +131,7 @@
       // 先确保 tesseract 库已加载
       await ensureTesseractLib();
 
-      console.log('[WebComicTranslate] 初始化 Tesseract OCR Worker...');
+      logStep('初始化 Tesseract OCR Worker...');
 
       const langMap = { jpn: 'jpn', eng: 'eng', chi_sim: 'chi_sim', kor: 'kor' };
       const tessLang = langMap[lang] || lang;
@@ -115,7 +140,7 @@
       ocrWorker = await Tesseract.createWorker(tessLang, 1);
 
       ocrReady = true;
-      console.log('[WebComicTranslate] OCR Worker 初始化完成');
+      logStep('OCR Worker 初始化完成');
       return ocrWorker;
     })();
 
@@ -164,7 +189,7 @@
     }
 
     // 跨域图片：通过 Background Worker fetch
-    console.log('[WebComicTranslate] 通过 Background 抓取跨域图片:', src.substring(0, 80));
+    logStep('通过Background抓取跨域: ' + src.substring(0, 80));
     const response = await chrome.runtime.sendMessage({
       type: 'fetchImage',
       url: src
@@ -617,7 +642,7 @@
     canvas.style.maxWidth = '100%';
     canvas.classList.add('webcomic-translated');
     img.replaceWith(canvas);
-    console.log('[WebComicTranslate] 翻译完成，图片已替换');
+    logStep('翻译完成，图片已替换');
   }
 
   // ==================== 鼠标悬停翻译模式 ====================
@@ -699,7 +724,7 @@
             processed++;
             translated++;
           } catch (err) {
-            console.warn('[WebComicTranslate] 图片处理失败:', err);
+            logWarn('图片处理失败: ' + err.message);
             processed++;
           }
         }
@@ -738,10 +763,10 @@
 
   // ==================== 启动自检 ====================
 
-  console.log('[WebComicTranslate] ✅ Content script 已加载 — 版本 0.1.0');
-  console.log('[WebComicTranslate] 页面:', location.href);
-  console.log('[WebComicTranslate] 图片数量:', document.querySelectorAll('img').length);
-  console.log('[WebComicTranslate] 使用方式: 1)右键图片→翻译图片文字  2)点扩展图标→翻译当前图片  3)点扩展图标→翻译全部图片');
+  logInfo('✅ Content script 已加载 — 版本 0.1.0');
+  logInfo('页面: ' + location.href);
+  logInfo('图片数量: ' + document.querySelectorAll('img').length);
+  logInfo('使用: 1)右键图片→翻译  2)点图标→翻译当前  3)点图标→翻译全部');
 
   // 视觉确认标记：加载成功后在左上角闪一下
   try {
@@ -754,6 +779,6 @@
     setTimeout(() => { badge.style.opacity = '0'; }, 800);
     setTimeout(() => { badge.remove(); }, 2500);
   } catch(e) {
-    console.warn('[WebComicTranslate] 无法创建启动标记:', e);
+    logWarn('无法创建启动标记: ' + e.message);
   }
 })();
