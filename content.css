@@ -1,0 +1,7 @@
+/* WebComicTranslate - Content Styles */
+
+/* 翻译过后的 canvas 样式 */
+.webcomic-translated {
+  border: 2px solid #4a90d9;
+  border-radius: 2px;
+}

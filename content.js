@@ -1,0 +1,438 @@
+// WebComicTranslate - Content Script
+// 注入到目标网页，负责图片捕获、文字检测、图像替换
+
+(function () {
+  'use strict';
+
+  // 当前语言配置
+  let config = {
+    sourceLang: 'jpn',       // 源语言（OCR用）
+    targetLang: 'zh-CN',     // 目标语言（翻译用）
+    enabled: true,
+  };
+
+  // 加载配置
+  chrome.storage.local.get(['sourceLang', 'targetLang', 'enabled'], (items) => {
+    if (items.sourceLang) config.sourceLang = items.sourceLang;
+    if (items.targetLang) config.targetLang = items.targetLang;
+    if (items.enabled !== undefined) config.enabled = items.enabled;
+  });
+
+  // 监听配置变更
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.sourceLang) config.sourceLang = changes.sourceLang.newValue;
+    if (changes.targetLang) config.targetLang = changes.targetLang.newValue;
+    if (changes.enabled) config.enabled = changes.enabled.newValue;
+  });
+
+  // ==================== 图片处理流水线 ====================
+
+  /**
+   * 步骤1: 从 img 元素获取图片像素数据
+   */
+  function imageToImageData(img) {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    return {
+      imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+      canvas: canvas,
+      ctx: ctx,
+      width: canvas.width,
+      height: canvas.height
+    };
+  }
+
+  /**
+   * 步骤2: 简易文字区域检测
+   * 针对漫画气泡——通常是白色/浅色背景上的深色文字
+   * 使用连通域分析找出候选文字区域
+   */
+  function detectTextRegions(imageData) {
+    const { width, height, data } = imageData;
+    const regions = [];
+
+    // 简化方案：用滑动窗口检测包含高对比度像素的区域
+    const blockSize = 32;
+    const visited = new Uint8Array(Math.ceil(width / blockSize) * Math.ceil(height / blockSize));
+
+    for (let by = 0; by < height; by += blockSize) {
+      for (let bx = 0; bx < width; bx += blockSize) {
+        const blockIdx = Math.floor(by / blockSize) * Math.ceil(width / blockSize) + Math.floor(bx / blockSize);
+        if (visited[blockIdx]) continue;
+
+        // 统计块内亮度方差，文字区域通常有较大的局部方差
+        let sumVariance = 0;
+        let pixelCount = 0;
+        const blockEndY = Math.min(by + blockSize, height);
+        const blockEndX = Math.min(bx + blockSize, width);
+
+        for (let y = by; y < blockEndY; y++) {
+          for (let x = bx; x < blockEndX; x++) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            // 累积灰度值（简化为统计是否有足够暗的像素）
+            if (gray < 80) { // 深色像素（可能是文字）
+              pixelCount++;
+            }
+          }
+        }
+
+        // 如果深色像素占比合适（超过5%，少于60%），认为是文字区域
+        const totalPixels = (blockEndY - by) * (blockEndX - bx);
+        const darkRatio = pixelCount / totalPixels;
+
+        if (darkRatio > 0.02 && darkRatio < 0.6) {
+          // 扩展区域边界
+          const region = expandTextRegion(imageData, bx, by, blockEndX, blockEndY);
+          if (region) {
+            regions.push(region);
+            // 标记附近块为已访问
+            markVisitedBlocks(visited, region, blockSize, width);
+          }
+        }
+      }
+    }
+
+    // 合并重叠区域
+    return mergeOverlappingRegions(regions);
+  }
+
+  function expandTextRegion(imageData, startX, startY, endX, endY) {
+    const { width, height, data } = imageData;
+    let minX = startX, minY = startY, maxX = endX, maxY = endY;
+    let expanded = true;
+    const maxExpandSteps = 10;
+    let steps = 0;
+
+    while (expanded && steps < maxExpandSteps) {
+      expanded = false;
+      steps++;
+
+      // 向上扩展
+      if (minY > 0) {
+        let hasDark = false;
+        for (let x = minX; x < maxX; x++) {
+          const idx = ((minY - 1) * width + x) * 4;
+          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+          if (gray < 100) { hasDark = true; break; }
+        }
+        if (hasDark) { minY--; expanded = true; }
+      }
+
+      // 向下扩展
+      if (maxY < height) {
+        let hasDark = false;
+        for (let x = minX; x < maxX; x++) {
+          const idx = (maxY * width + x) * 4;
+          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+          if (gray < 100) { hasDark = true; break; }
+        }
+        if (hasDark) { maxY++; expanded = true; }
+      }
+
+      // 向左扩展
+      if (minX > 0) {
+        let hasDark = false;
+        for (let y = minY; y < maxY; y++) {
+          const idx = (y * width + (minX - 1)) * 4;
+          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+          if (gray < 100) { hasDark = true; break; }
+        }
+        if (hasDark) { minX--; expanded = true; }
+      }
+
+      // 向右扩展
+      if (maxX < width) {
+        let hasDark = false;
+        for (let y = minY; y < maxY; y++) {
+          const idx = (y * width + maxX) * 4;
+          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+          if (gray < 100) { hasDark = true; break; }
+        }
+        if (hasDark) { maxX++; expanded = true; }
+      }
+    }
+
+    const regionWidth = maxX - minX;
+    const regionHeight = maxY - minY;
+
+    // 过滤掉过小或过大的区域
+    if (regionWidth < 10 || regionHeight < 8) return null;
+    if (regionWidth > width * 0.9 && regionHeight > height * 0.9) return null;
+
+    return {
+      x: minX,
+      y: minY,
+      width: regionWidth,
+      height: regionHeight,
+    };
+  }
+
+  function markVisitedBlocks(visited, region, blockSize, imageWidth) {
+    const blocksPerRow = Math.ceil(imageWidth / blockSize);
+    const startBlockX = Math.floor(region.x / blockSize);
+    const startBlockY = Math.floor(region.y / blockSize);
+    const endBlockX = Math.floor((region.x + region.width) / blockSize);
+    const endBlockY = Math.floor((region.y + region.height) / blockSize);
+
+    for (let by = startBlockY; by <= endBlockY; by++) {
+      for (let bx = startBlockX; bx <= endBlockX; bx++) {
+        const idx = by * blocksPerRow + bx;
+        if (idx < visited.length) visited[idx] = 1;
+      }
+    }
+  }
+
+  function mergeOverlappingRegions(regions) {
+    if (regions.length <= 1) return regions;
+
+    // 按面积从大到小排序
+    regions.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+
+    const merged = [];
+    const used = new Set();
+
+    for (let i = 0; i < regions.length; i++) {
+      if (used.has(i)) continue;
+
+      let current = { ...regions[i] };
+      used.add(i);
+
+      for (let j = i + 1; j < regions.length; j++) {
+        if (used.has(j)) continue;
+
+        const other = regions[j];
+        // 检查是否重叠
+        const overlapX = Math.max(0, Math.min(current.x + current.width, other.x + other.width) - Math.max(current.x, other.x));
+        const overlapY = Math.max(0, Math.min(current.y + current.height, other.y + other.height) - Math.max(current.y, other.y));
+
+        if (overlapX > 0 && overlapY > 0) {
+          // 合并
+          const newX = Math.min(current.x, other.x);
+          const newY = Math.min(current.y, other.y);
+          current = {
+            x: newX,
+            y: newY,
+            width: Math.max(current.x + current.width, other.x + other.width) - newX,
+            height: Math.max(current.y + current.height, other.y + other.height) - newY,
+          };
+          used.add(j);
+        }
+      }
+
+      merged.push(current);
+    }
+
+    return merged;
+  }
+
+  /**
+   * 从区域背景采样主色调（用于填充擦除）
+   */
+  function sampleBackgroundColor(imageData, region) {
+    const { width, data } = imageData;
+    let rSum = 0, gSum = 0, bSum = 0, count = 0;
+
+    // 采样区域边缘像素（避开中间的文字）
+    const margin = 2;
+    const { x, y, width: rw, height: rh } = region;
+
+    // 顶部和底部边缘
+    for (let sx = x + margin; sx < x + rw - margin; sx++) {
+      for (let dy = 0; dy < 3; dy++) {
+        const idxTop = ((y + dy) * width + sx) * 4;
+        rSum += data[idxTop]; gSum += data[idxTop + 1]; bSum += data[idxTop + 2];
+        const idxBottom = ((y + rh - 1 - dy) * width + sx) * 4;
+        rSum += data[idxBottom]; gSum += data[idxBottom + 1]; bSum += data[idxBottom + 2];
+        count += 2;
+      }
+    }
+
+    // 左右边缘
+    for (let sy = y + margin; sy < y + rh - margin; sy++) {
+      for (let dx = 0; dx < 3; dx++) {
+        const idxLeft = (sy * width + (x + dx)) * 4;
+        rSum += data[idxLeft]; gSum += data[idxLeft + 1]; bSum += data[idxLeft + 2];
+        const idxRight = (sy * width + (x + rw - 1 - dx)) * 4;
+        rSum += data[idxRight]; gSum += data[idxRight + 1]; bSum += data[idxRight + 2];
+        count += 2;
+      }
+    }
+
+    if (count === 0) return { r: 255, g: 255, b: 255 };
+
+    return {
+      r: Math.round(rSum / count),
+      g: Math.round(gSum / count),
+      b: Math.round(bSum / count),
+    };
+  }
+
+  /**
+   * 步骤3: 在 Canvas 上擦除原文并绘制翻译文字
+   */
+  function renderTranslation(ctx, region, translatedText, bgColor) {
+    const { x, y, width, height } = region;
+    const padding = 4;
+
+    // 填充背景色覆盖原文
+    ctx.fillStyle = `rgb(${bgColor.r},${bgColor.g},${bgColor.b})`;
+    ctx.fillRect(x - padding, y - padding, width + padding * 2, height + padding * 2);
+
+    // 计算合适的字体大小
+    const maxWidth = width + padding * 2;
+    let fontSize = Math.min(14, height * 0.9);
+    ctx.font = `${fontSize}px sans-serif`;
+    const metrics = ctx.measureText(translatedText);
+
+    // 如果文字太宽，缩小字体
+    if (metrics.width > maxWidth && metrics.width > 0) {
+      fontSize = fontSize * (maxWidth / metrics.width);
+      fontSize = Math.max(8, fontSize);
+    }
+
+    // 绘制翻译文字
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+    ctx.textBaseline = 'middle';
+
+    // 居中绘制
+    const textX = x + width / 2;
+    const textY = y + height / 2;
+
+    // 简单换行处理
+    const lines = wrapText(ctx, translatedText, maxWidth);
+    let startY = textY - ((lines.length - 1) * fontSize * 0.6);
+
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], textX, startY + i * fontSize * 1.2);
+    }
+  }
+
+  function wrapText(ctx, text, maxWidth) {
+    const words = text.split('');
+    const lines = [];
+    let currentLine = '';
+
+    for (const char of words) {
+      const testLine = currentLine + char;
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && currentLine.length > 0) {
+        lines.push(currentLine);
+        currentLine = char;
+      } else {
+        currentLine = testLine;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+    return lines.length > 0 ? lines : [text];
+  }
+
+  /**
+   * 步骤4: 通过 background worker 翻译
+   */
+  function translateText(text) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: 'translate',
+          text: text,
+          sourceLang: 'ja',
+          targetLang: config.targetLang,
+        },
+        (response) => {
+          if (response && response.success) {
+            resolve(response.text);
+          } else {
+            reject(new Error(response ? response.error : '翻译失败'));
+          }
+        }
+      );
+    });
+  }
+
+  // ==================== 对外接口 ====================
+
+  /**
+   * 处理单张图片的完整流水线
+   * 这是将来集成 OCR 和翻译后的主入口
+   */
+  async function processImage(img) {
+    if (!config.enabled) return;
+
+    // 步骤1: 获取图片数据
+    const { canvas, ctx, imageData, width, height } = imageToImageData(img);
+
+    // 步骤2: 检测文字区域
+    const regions = detectTextRegions(imageData);
+    if (regions.length === 0) return; // 没有检测到文字区域
+
+    // 步骤3: 对每个区域进行 OCR（当前先用占位符）
+    // TODO: 集成 Tesseract.js OCR
+    const ocrResults = regions.map((region, i) => ({
+      region: region,
+      text: `text_${i}`, // 占位，后续替换为 OCR 结果
+    }));
+
+    // 步骤4: 翻译
+    for (const result of ocrResults) {
+      if (result.text) {
+        try {
+          result.translated = await translateText(result.text);
+        } catch (e) {
+          console.warn('翻译失败:', e);
+          result.translated = result.text; // 翻译失败保留原文
+        }
+      }
+      // 采样背景色并擦除+渲染
+      // 注意：这部分需要等 OCR 集成后才能正确工作
+    }
+
+    // 步骤5: 替换图片
+    // 当前：如果检测到区域，用 canvas 替换 img
+    canvas.style.width = img.style.width || img.width + 'px';
+    canvas.style.height = img.style.height || img.height + 'px';
+    canvas.style.maxWidth = '100%';
+    img.replaceWith(canvas);
+  }
+
+  // ==================== 鼠标悬停翻译模式 ====================
+  // 作为 MVP 的简易实现：用户右键点击图片触发翻译
+
+  let hoveredImg = null;
+
+  document.addEventListener('contextmenu', (e) => {
+    const target = e.target;
+    if (target.tagName === 'IMG') {
+      hoveredImg = target;
+    }
+  });
+
+  // 点击扩展图标发送的消息
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'translateCurrentImage' && hoveredImg) {
+      processImage(hoveredImg).then(() => {
+        sendResponse({ success: true });
+      }).catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (message.type === 'translateAllImages') {
+      const images = document.querySelectorAll('img');
+      Promise.all(Array.from(images).map(processImage))
+        .then(() => sendResponse({ success: true, count: images.length }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+  });
+
+  console.log('[WebComicTranslate] Content script 已加载');
+})();

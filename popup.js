@@ -1,0 +1,62 @@
+// WebComicTranslate - Popup Script
+
+document.addEventListener('DOMContentLoaded', () => {
+  const sourceLang = document.getElementById('sourceLang');
+  const targetLang = document.getElementById('targetLang');
+  const translateCurrentBtn = document.getElementById('translateCurrent');
+  const translateAllBtn = document.getElementById('translateAll');
+  const statusEl = document.getElementById('status');
+
+  // 加载保存的配置
+  chrome.storage.local.get(['sourceLang', 'targetLang'], (items) => {
+    if (items.sourceLang) sourceLang.value = items.sourceLang;
+    if (items.targetLang) targetLang.value = items.targetLang;
+  });
+
+  // 保存配置
+  sourceLang.addEventListener('change', () => {
+    chrome.storage.local.set({ sourceLang: sourceLang.value });
+  });
+
+  targetLang.addEventListener('change', () => {
+    chrome.storage.local.set({ targetLang: targetLang.value });
+  });
+
+  // 翻译当前图片（右键选中的）
+  translateCurrentBtn.addEventListener('click', async () => {
+    statusEl.textContent = '正在翻译...';
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: 'translateCurrentImage'
+      });
+      if (response && response.success) {
+        statusEl.textContent = '✅ 翻译完成';
+      } else {
+        statusEl.textContent = '⚠️ 请先在页面上右键点击一张图片';
+      }
+    } catch (e) {
+      statusEl.textContent = '❌ 错误：' + e.message;
+    }
+  });
+
+  // 翻译全部图片
+  translateAllBtn.addEventListener('click', async () => {
+    statusEl.textContent = '正在翻译所有图片...';
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: 'translateAllImages'
+      });
+      if (response && response.success) {
+        statusEl.textContent = `✅ 已处理 ${response.count} 张图片`;
+      } else {
+        statusEl.textContent = '⚠️ 翻译未完成';
+      }
+    } catch (e) {
+      statusEl.textContent = '❌ 错误：' + e.message;
+    }
+  });
+});
