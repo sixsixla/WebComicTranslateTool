@@ -583,9 +583,19 @@
 
     if (message.type === 'translateAllImages') {
       const images = document.querySelectorAll('img');
-      Promise.all(Array.from(images).map(processImage))
-        .then(() => sendResponse({ success: true, count: images.length }))
-        .catch(err => sendResponse({ success: false, error: err.message }));
+      // 顺序处理避免 OCR Worker 并发冲突
+      (async () => {
+        let processed = 0;
+        for (const img of images) {
+          try {
+            await processImage(img);
+            processed++;
+          } catch (err) {
+            console.warn('[WebComicTranslate] 图片处理失败:', err);
+          }
+        }
+        sendResponse({ success: true, count: processed });
+      })();
       return true;
     }
   });
