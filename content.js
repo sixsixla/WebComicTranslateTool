@@ -4,6 +4,50 @@
 (function () {
   'use strict';
 
+  // ==================== 页内状态提示器 ====================
+
+  let statusEl = null;
+
+  function ensureStatusEl() {
+    if (statusEl) return statusEl;
+    statusEl = document.createElement('div');
+    statusEl.id = 'webcomic-status';
+    statusEl.style.cssText = `
+      position: fixed; bottom: 24px; right: 24px; z-index: 2147483647;
+      background: #1a1a2e; color: #eee; padding: 12px 18px;
+      border-radius: 10px; font-size: 14px; font-family: "Microsoft YaHei", sans-serif;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5); max-width: 400px;
+      line-height: 1.6; transition: opacity 0.3s; pointer-events: none;
+      display: none;
+    `;
+    document.body.appendChild(statusEl);
+    return statusEl;
+  }
+
+  function showStatus(msg, isError) {
+    const el = ensureStatusEl();
+    el.textContent = (isError ? '❌ ' : '') + msg;
+    el.style.display = 'block';
+    el.style.opacity = '1';
+    el.style.background = isError ? '#5a1a1a' : '#1a1a2e';
+  }
+
+  function updateStatus(msg) {
+    const el = ensureStatusEl();
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.opacity = '1';
+  }
+
+  function hideStatus(delay) {
+    setTimeout(() => {
+      if (statusEl) {
+        statusEl.style.opacity = '0';
+        setTimeout(() => { if (statusEl) statusEl.style.display = 'none'; }, 300);
+      }
+    }, delay || 3000);
+  }
+
   // 当前语言配置
   let config = {
     sourceLang: 'jpn',       // 源语言（OCR用）
@@ -53,7 +97,8 @@
       const tessLang = langMap[lang] || lang;
 
       // Tesseract.js 自动检测 worker 路径（默认与 tesseract.min.js 同目录）
-      // 语言包从 CDN 自动下载，缓存在浏览器中
+      // 语言包从 CDN 自动下载，缓存在浏览器中（首次约15MB，需等待）
+      showStatus('正下载 OCR 语言包 (~15MB)，首次加载需等待...');
       ocrWorker = await Tesseract.createWorker(tessLang, 1);
 
       ocrReady = true;
@@ -497,27 +542,31 @@
 
   /**
    * 处理单张图片的完整流水线
+   * @param {number} imgIndex 图片序号（批量处理用），可选
+   * @param {number} totalImgs 总图片数（批量处理用），可选
    */
-  async function processImage(img) {
+  async function processImage(img, imgIndex, totalImgs) {
     if (!config.enabled) return;
 
+    const prefix = totalImgs ? `[${imgIndex}/${totalImgs}] ` : '';
+
     // 步骤1: 获取图片数据
-    console.log('[WebComicTranslate] Step 1: 捕获图片...');
+    showStatus(`${prefix}正在下载图片...`);
     const { canvas, ctx, imageData, width, height } = await imageToImageData(img);
-    console.log(`[WebComicTranslate] 图片尺寸: ${width}x${height}`);
 
     // 步骤2: 检测文字区域
-    console.log('[WebComicTranslate] Step 2: 检测文字区域...');
+    updateStatus(`${prefix}检测文字区域中... (${width}×${height})`);
     const regions = detectTextRegions(imageData);
     if (regions.length === 0) {
-      console.log('[WebComicTranslate] 未检测到文字区域');
+      updateStatus(`${prefix}未检测到文字区域，跳过`);
       return;
     }
-    console.log(`[WebComicTranslate] 检测到 ${regions.length} 个区域，开始 OCR...`);
+    updateStatus(`${prefix}检测到 ${regions.length} 个文字区域`);
 
     // 步骤3: 对每个区域进行 OCR 识别
     const ocrResults = [];
     for (let i = 0; i < regions.length; i++) {
+      updateStatus(`${prefix}OCR 识别中... (${i + 1}/${regions.length})`);
       try {
         const text = await ocrRegion(ctx, regions[i]);
         ocrResults.push({ region: regions[i], text });
@@ -530,16 +579,16 @@
     // 过滤掉空结果的区域
     const validResults = ocrResults.filter(r => r.text.length > 0);
     if (validResults.length === 0) {
-      console.log('[WebComicTranslate] 所有区域 OCR 结果为空');
+      updateStatus(`${prefix}OCR 无有效结果，跳过`);
       return;
     }
 
     // 步骤4: 翻译 + 步骤5: 擦除并渲染
-    console.log('[WebComicTranslate] Step 4: 翻译...');
-    for (const result of validResults) {
+    for (let i = 0; i < validResults.length; i++) {
+      const result = validResults[i];
+      updateStatus(`${prefix}翻译中... (${i + 1}/${validResults.length})`);
       try {
         result.translated = await translateText(result.text);
-        console.log(`[WebComicTranslate] 翻译: "${result.text}" → "${result.translated}"`);
       } catch (e) {
         console.warn('[WebComicTranslate] 翻译失败:', e);
         result.translated = result.text;
@@ -573,9 +622,14 @@
   // 点击扩展图标发送的消息
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'translateCurrentImage' && hoveredImg) {
+      showStatus('开始翻译图片...');
       processImage(hoveredImg).then(() => {
+        updateStatus('✅ 翻译完成！图片已替换');
+        hideStatus(3000);
         sendResponse({ success: true });
       }).catch((err) => {
+        showStatus(`翻译失败: ${err.message}`, true);
+        hideStatus(5000);
         sendResponse({ success: false, error: err.message });
       });
       return true;
@@ -583,18 +637,31 @@
 
     if (message.type === 'translateAllImages') {
       const images = document.querySelectorAll('img');
+      if (images.length === 0) {
+        showStatus('页面没有图片', true);
+        hideStatus(3000);
+        sendResponse({ success: true, count: 0 });
+        return true;
+      }
       // 顺序处理避免 OCR Worker 并发冲突
       (async () => {
         let processed = 0;
-        for (const img of images) {
+        let translated = 0;
+        showStatus(`开始处理 ${images.length} 张图片...`);
+        for (let i = 0; i < images.length; i++) {
+          updateStatus(`处理图片 ${i + 1}/${images.length}...`);
           try {
-            await processImage(img);
+            await processImage(images[i], i + 1, images.length);
             processed++;
+            translated++;
           } catch (err) {
             console.warn('[WebComicTranslate] 图片处理失败:', err);
+            processed++;
           }
         }
-        sendResponse({ success: true, count: processed });
+        updateStatus(`✅ 完成！处理 ${processed} 张，翻译了 ${translated} 张`);
+        hideStatus(4000);
+        sendResponse({ success: true, count: translated });
       })();
       return true;
     }
