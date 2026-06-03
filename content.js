@@ -74,6 +74,25 @@
   let ocrWorker = null;
   let ocrReady = false;
   let ocrInitPromise = null;
+  let tesseractLibLoaded = false;
+
+  /**
+   * 动态加载 tesseract.js 库（懒加载，仅首次调用时执行）
+   */
+  async function ensureTesseractLib() {
+    if (tesseractLibLoaded) return;
+    if (typeof Tesseract !== 'undefined') {
+      tesseractLibLoaded = true;
+      return;
+    }
+    console.log('[WebComicTranslate] 加载 tesseract.js 库...');
+    const url = chrome.runtime.getURL('lib/tesseract.min.js');
+    const resp = await fetch(url);
+    const code = await resp.text();
+    eval(code);
+    tesseractLibLoaded = true;
+    console.log('[WebComicTranslate] tesseract.js 库加载完成');
+  }
 
   /**
    * 初始化 Tesseract.js OCR Worker（全局单例，懒加载）
@@ -84,20 +103,14 @@
     if (ocrInitPromise) return ocrInitPromise;
 
     ocrInitPromise = (async () => {
-      console.log('[WebComicTranslate] 初始化 Tesseract OCR Worker...');
-      console.log('[WebComicTranslate] 首次加载将下载日语语言包 (~15MB)，请耐心等待...');
+      // 先确保 tesseract 库已加载
+      await ensureTesseractLib();
 
-      // 语言代码映射：popup 用的 Tesseract 语言代码
-      const langMap = {
-        jpn: 'jpn',
-        eng: 'eng',
-        chi_sim: 'chi_sim',
-        kor: 'kor',
-      };
+      console.log('[WebComicTranslate] 初始化 Tesseract OCR Worker...');
+
+      const langMap = { jpn: 'jpn', eng: 'eng', chi_sim: 'chi_sim', kor: 'kor' };
       const tessLang = langMap[lang] || lang;
 
-      // Tesseract.js 自动检测 worker 路径（默认与 tesseract.min.js 同目录）
-      // 语言包从 CDN 自动下载，缓存在浏览器中（首次约15MB，需等待）
       showStatus('正下载 OCR 语言包 (~15MB)，首次加载需等待...');
       ocrWorker = await Tesseract.createWorker(tessLang, 1);
 
@@ -664,6 +677,31 @@
         sendResponse({ success: true, count: translated });
       })();
       return true;
+    }
+
+    if (message.type === 'translateImageByUrl') {
+      // 右键菜单触发：根据 URL 找到图片元素
+      const images = document.querySelectorAll('img');
+      let targetImg = null;
+      for (const img of images) {
+        if (img.src === message.url || img.getAttribute('src') === message.url) {
+          targetImg = img;
+          break;
+        }
+      }
+      if (!targetImg) {
+        showStatus('未找到对应图片', true);
+        hideStatus(3000);
+        return;
+      }
+      showStatus('开始翻译图片...');
+      processImage(targetImg).then(() => {
+        updateStatus('✅ 翻译完成！');
+        hideStatus(3000);
+      }).catch((err) => {
+        showStatus(`翻译失败: ${err.message}`, true);
+        hideStatus(5000);
+      });
     }
   });
 

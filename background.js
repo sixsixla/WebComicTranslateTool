@@ -3,6 +3,27 @@
 
 const TRANSLATE_API = 'https://translate.googleapis.com/translate_a/single';
 
+// ==================== 右键菜单 ====================
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: 'translateImage',
+    title: '翻译图片文字',
+    contexts: ['image'],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === 'translateImage' && tab) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'translateImageByUrl',
+      url: info.srcUrl,
+    }).catch(() => {
+      // content script 可能未注入，忽略
+    });
+  }
+});
+
 // ==================== 图片抓取 ====================
 
 /**
