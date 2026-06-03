@@ -1,0 +1,30 @@
+{
+  "name": "webcomictranslate",
+  "version": "1.0.0",
+  "description": "Chrome 浏览器插件，实时翻译网页上漫画图片中的文字，在原位置替换显示。",
+  "main": "background.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "node test_local.js",
+    "translate": "node test_local.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sixsixla/WebComicTranslateTool.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/sixsixla/WebComicTranslateTool/issues"
+  },
+  "homepage": "https://github.com/sixsixla/WebComicTranslateTool#readme",
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "sharp": "^0.34.5",
+    "tesseract.js": "^5.1.1"
+  }
+}
