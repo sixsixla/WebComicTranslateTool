@@ -632,11 +632,42 @@
     }
   });
 
+  // 找页面上的最佳候选图片（优先大图、可见图）
+  function findBestImage() {
+    // 优先用右键选中的
+    if (hoveredImg && hoveredImg.isConnected) return hoveredImg;
+
+    const images = document.querySelectorAll('img');
+    if (images.length === 0) return null;
+
+    // 按面积排序，找最大可见的图片
+    let best = null;
+    let bestScore = 0;
+    for (const img of images) {
+      const rect = img.getBoundingClientRect();
+      const visible = rect.width > 50 && rect.height > 50 &&
+        rect.bottom > 0 && rect.top < window.innerHeight;
+      const score = img.naturalWidth * img.naturalHeight * (visible ? 2 : 1);
+      if (score > bestScore) {
+        bestScore = score;
+        best = img;
+      }
+    }
+    return best;
+  }
+
   // 点击扩展图标发送的消息
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'translateCurrentImage' && hoveredImg) {
+    if (message.type === 'translateCurrentImage') {
+      const targetImg = findBestImage();
+      if (!targetImg) {
+        showStatus('页面没有找到图片', true);
+        hideStatus(3000);
+        sendResponse({ success: false, error: '页面没有找到图片' });
+        return;
+      }
       showStatus('开始翻译图片...');
-      processImage(hoveredImg).then(() => {
+      processImage(targetImg).then(() => {
         updateStatus('✅ 翻译完成！图片已替换');
         hideStatus(3000);
         sendResponse({ success: true });
