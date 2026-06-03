@@ -106,17 +106,28 @@
    */
   async function ensureTesseractLib() {
     if (tesseractLibLoaded) return;
+
+    // 优先：content_scripts 已加载 tesseract.min.js，全局 Tesseract 直接可用
     if (typeof Tesseract !== 'undefined') {
       tesseractLibLoaded = true;
+      logInfo('Tesseract 库已就绪（content_scripts 预加载）');
       return;
     }
-    logStep('加载 tesseract.js 库...');
-    const url = chrome.runtime.getURL('lib/tesseract.min.js');
-    const resp = await fetch(url);
-    const code = await resp.text();
-    eval(code);
-    tesseractLibLoaded = true;
-    logStep('tesseract.js 库加载完成');
+
+    // 备选：动态加载（可能被页面 CSP 阻止 eval）
+    logStep('动态加载 tesseract.js 库...');
+    try {
+      const url = chrome.runtime.getURL('lib/tesseract.min.js');
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`fetch 失败: HTTP ${resp.status}`);
+      const code = await resp.text();
+      eval(code);
+      tesseractLibLoaded = true;
+      logStep('tesseract.js 库加载完成（动态加载）');
+    } catch (e) {
+      logError(`Tesseract 库加载失败: ${e.message}（可能是 CSP 阻止了 eval）`);
+      throw e;
+    }
   }
 
   /**
@@ -595,6 +606,7 @@
     // 步骤2: 检测文字区域
     updateStatus(`${prefix}检测文字区域中... (${width}×${height})`);
     const regions = detectTextRegions(imageData);
+    logInfo(prefix + "检测到 " + regions.length + " 个文字区域");
     if (regions.length === 0) {
       updateStatus(`${prefix}未检测到文字区域，跳过`);
       return;
@@ -617,6 +629,7 @@
     // 过滤掉空结果的区域
     const validResults = ocrResults.filter(r => r.text.length > 0);
     if (validResults.length === 0) {
+      logWarn(prefix + "OCR无有效结果，跳过");
       updateStatus(`${prefix}OCR 无有效结果，跳过`);
       return;
     }
