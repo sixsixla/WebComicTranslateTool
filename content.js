@@ -736,5 +736,24 @@
     }
   });
 
-  console.log('[WebComicTranslate] Content script 已加载');
+  // ==================== 启动自检 ====================
+
+  console.log('[WebComicTranslate] ✅ Content script 已加载 — 版本 0.1.0');
+  console.log('[WebComicTranslate] 页面:', location.href);
+  console.log('[WebComicTranslate] 图片数量:', document.querySelectorAll('img').length);
+  console.log('[WebComicTranslate] 使用方式: 1)右键图片→翻译图片文字  2)点扩展图标→翻译当前图片  3)点扩展图标→翻译全部图片');
+
+  // 视觉确认标记：加载成功后在左上角闪一下
+  try {
+    const badge = document.createElement('div');
+    badge.textContent = 'WCT ✓';
+    badge.style.cssText = 'position:fixed;top:8px;left:8px;z-index:2147483647;' +
+      'background:#22c55e;color:#fff;padding:4px 10px;border-radius:6px;' +
+      'font-size:12px;font-family:sans-serif;transition:opacity 1.5s;opacity:1;';
+    document.body.appendChild(badge);
+    setTimeout(() => { badge.style.opacity = '0'; }, 800);
+    setTimeout(() => { badge.remove(); }, 2500);
+  } catch(e) {
+    console.warn('[WebComicTranslate] 无法创建启动标记:', e);
+  }
 })();
