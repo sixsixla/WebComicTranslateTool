@@ -29,20 +29,68 @@
 
   /**
    * 步骤1: 从 img 元素获取图片像素数据
+   * 通过 Background Worker fetch 图片绕过 CORS 限制
    */
-  function imageToImageData(img) {
+  async function imageToImageData(img) {
+    const src = img.src || img.getAttribute('src');
+
+    // 如果是 data URL 或同源，直接使用原始 img
+    if (src.startsWith('data:') || isSameOrigin(src)) {
+      return imageToImageDataDirect(img);
+    }
+
+    // 跨域图片：通过 Background Worker fetch
+    console.log('[WebComicTranslate] 通过 Background 抓取跨域图片:', src.substring(0, 80));
+    const response = await chrome.runtime.sendMessage({
+      type: 'fetchImage',
+      url: src
+    });
+
+    if (!response || !response.success) {
+      throw new Error('图片抓取失败: ' + (response ? response.error : '未知错误'));
+    }
+
+    // 从 base64 创建新 Image（无跨域问题）
+    const dataUrl = response.dataUrl;
+    const newImg = new Image();
+    await new Promise((resolve, reject) => {
+      newImg.onload = resolve;
+      newImg.onerror = () => reject(new Error('base64 图片加载失败'));
+      newImg.src = dataUrl;
+    });
+
+    return imageToImageDataDirect(newImg);
+  }
+
+  /**
+   * 从同源 img 直接获取像素数据（无需绕过 CORS）
+   */
+  function imageToImageDataDirect(img) {
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     return {
-      imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
-      canvas: canvas,
-      ctx: ctx,
+      imageData,
+      canvas,
+      ctx,
       width: canvas.width,
       height: canvas.height
     };
+  }
+
+  /**
+   * 判断 URL 是否与当前页面同源
+   */
+  function isSameOrigin(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      return parsed.origin === location.origin;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -367,7 +415,7 @@
     if (!config.enabled) return;
 
     // 步骤1: 获取图片数据
-    const { canvas, ctx, imageData, width, height } = imageToImageData(img);
+    const { canvas, ctx, imageData, width, height } = await imageToImageData(img);
 
     // 步骤2: 检测文字区域
     const regions = detectTextRegions(imageData);
