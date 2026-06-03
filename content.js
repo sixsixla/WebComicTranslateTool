@@ -371,12 +371,67 @@
     if (regionWidth < 10 || regionHeight < 8) return null;
     if (regionWidth > width * 0.9 && regionHeight > height * 0.9) return null;
 
+    // 气泡检查：周围像素是否偏白（漫画气泡=白底+黑字）
+    if (!isLikelyBubble(imageData, { x: minX, y: minY, width: regionWidth, height: regionHeight })) {
+      return null;
+    }
+
     return {
       x: minX,
       y: minY,
       width: regionWidth,
       height: regionHeight,
     };
+  }
+
+  /**
+   * 检查区域周围是否以白色为主 → 很可能是漫画气泡而非衣物纹理
+   */
+  function isLikelyBubble(imageData, region) {
+    const { width, data } = imageData;
+    const { x, y, width: rw, height: rh } = region;
+    const border = 6;
+    let whiteCount = 0, totalCount = 0;
+
+    // 采样区域的上下左右边框像素
+    for (let sx = Math.max(0, x - border); sx < Math.min(width, x + rw + border); sx++) {
+      for (let dy = 0; dy < border; dy++) {
+        // 上边框
+        const topY = y - border + dy;
+        if (topY >= 0) {
+          const idx = (topY * width + sx) * 4;
+          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
+          totalCount++;
+        }
+        // 下边框
+        const bottomY = y + rh + dy;
+        if (bottomY < imageData.height) {
+          const idx = (bottomY * width + sx) * 4;
+          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
+          totalCount++;
+        }
+      }
+    }
+    for (let sy = y; sy < y + rh; sy++) {
+      for (let dx = 0; dx < border; dx++) {
+        const leftX = x - border + dx;
+        if (leftX >= 0) {
+          const idx = (sy * width + leftX) * 4;
+          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
+          totalCount++;
+        }
+        const rightX = x + rw + dx;
+        if (rightX < width) {
+          const idx = (sy * width + rightX) * 4;
+          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
+          totalCount++;
+        }
+      }
+    }
+
+    if (totalCount === 0) return false;
+    // 周围超过 60% 为白色 → 可能是气泡
+    return (whiteCount / totalCount) > 0.6;
   }
 
   function markVisitedBlocks(visited, region, blockSize, imageWidth) {
@@ -484,37 +539,41 @@
    */
   function renderTranslation(ctx, region, translatedText, bgColor) {
     const { x, y, width, height } = region;
-    const padding = 4;
+    const padding = 2;
 
-    // 填充背景色覆盖原文
-    ctx.fillStyle = `rgb(${bgColor.r},${bgColor.g},${bgColor.b})`;
+    // 用半透明背景色柔和覆盖（而非完全遮挡）
+    ctx.fillStyle = `rgba(${bgColor.r},${bgColor.g},${bgColor.b},0.92)`;
     ctx.fillRect(x - padding, y - padding, width + padding * 2, height + padding * 2);
 
-    // 计算合适的字体大小
-    const maxWidth = width + padding * 2;
-    let fontSize = Math.min(14, height * 0.9);
-    ctx.font = `${fontSize}px sans-serif`;
+    // 计算字体大小（CJK 至少 12px 否则不可读）
+    const maxWidth = width + padding * 2 - 4;
+    let fontSize = Math.max(12, Math.min(16, height * 0.85));
+    ctx.font = `${fontSize}px "SimHei", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif`;
     const metrics = ctx.measureText(translatedText);
 
-    // 如果文字太宽，缩小字体
     if (metrics.width > maxWidth && metrics.width > 0) {
       fontSize = fontSize * (maxWidth / metrics.width);
-      fontSize = Math.max(8, fontSize);
+      fontSize = Math.max(11, fontSize);
     }
 
-    // 绘制翻译文字
-    ctx.fillStyle = '#000000';
-    ctx.font = `bold ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+    // 绘制翻译文字 (黑色带白色描边，确保可读)
+    ctx.font = `${fontSize}px "SimHei", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif`;
     ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
 
-    // 居中绘制
     const textX = x + width / 2;
     const textY = y + height / 2;
-
-    // 简单换行处理
     const lines = wrapText(ctx, translatedText, maxWidth);
     let startY = textY - ((lines.length - 1) * fontSize * 0.6);
 
+    // 白色描边提升可读性
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.strokeText(lines[i], textX, startY + i * fontSize * 1.2);
+    }
+
+    ctx.fillStyle = '#111111';
     for (let i = 0; i < lines.length; i++) {
       ctx.fillText(lines[i], textX, startY + i * fontSize * 1.2);
     }
