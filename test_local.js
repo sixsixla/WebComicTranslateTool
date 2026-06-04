@@ -70,7 +70,7 @@ async function translateText(text, from = 'ja', to = 'zh-CN') {
     }
     return result || text;
   } catch (e) {
-    return `[译]${text}`;
+    return text; // API不通时直接返回原文
   }
 }
 
@@ -391,7 +391,7 @@ function renderTranslation(ctx, region, text, bgColor) {
 }
 
 function renderVerticalText(ctx, bx, by, bw, bh, text, pad) {
-  let fontSize = Math.max(12, Math.min(16, bw * 0.85));
+  let fontSize = Math.max(14, Math.min(bw * 0.85, bh * 0.08));
   ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -425,7 +425,7 @@ function renderVerticalText(ctx, bx, by, bw, bh, text, pad) {
 
 function renderHorizontalText(ctx, bx, by, bw, bh, text, pad) {
   const maxWidth = bw + pad * 2 - 4;
-  let fontSize = Math.max(12, Math.min(16, bh * 0.85));
+  let fontSize = Math.max(14, Math.min(bh * 0.12, bw * 0.9));
   ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
   const metrics = ctx.measureText(text);
   if (metrics.width > maxWidth && metrics.width > 0) {
