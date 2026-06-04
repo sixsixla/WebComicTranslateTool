@@ -197,11 +197,13 @@ function findBubbles(data, width, height) {
 
       // 过滤：面积够大但不超过整页的40%
       const area = region.width * region.height;
-      if (area < 8000 || area > width * height * 0.5) continue;
+      if (area < 15000 || area > width * height * 0.5) continue;
       // 宽高都不小于60px
       if (region.width < 60 || region.height < 60) continue;
       // 区域内白色占比>70%（确保是气泡不是杂色区域）
       if (region.whiteRatio < 0.7) continue;
+      // 过滤长条形（非气泡）
+      if (region.width > region.height * 4 || region.height > region.width * 4) continue;
 
       bubbles.push(region);
     }
@@ -253,49 +255,6 @@ function floodFill(data, width, height, visited, sx, sy, threshold) {
 }
 
 // 简化：气泡本身即为文字区域
-function findTextInBubble_OLD(data, width, height, bubble) {
-  const regions = [];
-  const blockSize = 24;
-  const bx = bubble.x, by = bubble.y, bw = bubble.width, bh = bubble.height;
-
-  for (let y = by; y < by + bh - blockSize; y += blockSize / 2) {
-    for (let x = bx; x < bx + bw - blockSize; x += blockSize / 2) {
-      let darkCount = 0, totalCount = 0;
-      const endY = Math.min(y + blockSize, by + bh);
-      const endX = Math.min(x + blockSize, bx + bw);
-
-      for (let py = y; py < endY; py++) {
-        for (let px = x; px < endX; px++) {
-          const idx = (py * width + px) * 4;
-          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 80) darkCount++;
-          totalCount++;
-        }
-      }
-
-      if (darkCount > totalCount * 0.03 && darkCount < totalCount * 0.5) {
-        // 扩展区域
-        let minX = x, minY = y, maxX = endX, maxY = endY;
-        let expanded = true, steps = 0;
-        while (expanded && steps < 8) {
-          expanded = false; steps++;
-          // 4方向扩展
-          if (minY > by && hasDarkInRow(data, width, minY - 1, minX, maxX)) { minY--; expanded = true; }
-          if (maxY < by + bh && hasDarkInRow(data, width, maxY, minX, maxX)) { maxY++; expanded = true; }
-          if (minX > bx && hasDarkInCol(data, width, minX - 1, minY, maxY)) { minX--; expanded = true; }
-          if (maxX < bx + bw && hasDarkInCol(data, width, maxX, minY, maxY)) { maxX++; expanded = true; }
-        }
-
-        const rw = maxX - minX, rh = maxY - minY;
-        if (rw > 20 && rh > 15 && rw < bw * 0.95 && rh < bh * 0.95) {
-          regions.push({ x: minX, y: minY, width: rw, height: rh });
-        }
-      }
-    }
-  }
-
-  return mergeOverlapping(regions);
-}
-
 function hasDarkInRow(data, width, y, x1, x2) {
   for (let x = x1; x < x2; x++) {
     const idx = (y * width + x) * 4;
@@ -507,7 +466,7 @@ async function processImage(inputPath, outputPath) {
   }
 
   // 4. 过滤空结果
-  const validResults = ocrResults.filter(r => r.text.length > 2 && r.region.width > 50 && r.region.height > 40);
+  const validResults = ocrResults.filter(r => r.text.length > 2 && r.region.width > 80 && r.region.height > 80);
   console.log(`   有效 OCR 结果: ${validResults.length}/${ocrResults.length}`);
   if (validResults.length === 0) return;
 
