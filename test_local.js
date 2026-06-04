@@ -39,16 +39,16 @@ registerFonts();
 
 // ==================== 配置 ====================
 
-const CONFIG = loadConfig();
-const _CONFIG_DEFAULTS = {
-  sourceLang: 'jpn',       // OCR 源语言
-  translateFrom: 'ja',      // 翻译源语言代码
-  translateTo: 'zh-CN',     // 翻译目标语言
-  blockSize: 40,            // 文字检测块大小
-  maxRegions: 60,
-  deepseekApiKey: '',
-};
+  const _CONFIG_DEFAULTS = {
+    sourceLang: "jpn",
+    translateFrom: "ja",
+    translateTo: "zh-CN",
+    blockSize: 40,
+    maxRegions: 20,
+    deepseekApiKey: "",
+  };
 
+  const CONFIG = loadConfig();
 function loadConfig() {
   try {
     const user = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
@@ -425,7 +425,7 @@ function renderTranslation(ctx, region, text, bgColor) {
   const padding = 2;
 
   // 半透明背景覆盖
-  ctx.fillStyle = `rgba(${bgColor.r},${bgColor.g},${bgColor.b},0.92)`;
+  ctx.fillStyle = `rgba(${bgColor.r},${bgColor.g},${bgColor.b},0.98)`;
   ctx.fillRect(x - padding, y - padding, width + padding * 2, height + padding * 2);
 
   // 判断竖排/横排：高>宽1.5倍 → 竖排（日语漫画标准）
@@ -439,7 +439,7 @@ function renderTranslation(ctx, region, text, bgColor) {
 }
 
 function renderVerticalText(ctx, bx, by, bw, bh, text, pad) {
-  let fontSize = Math.max(14, Math.min(bw * 0.85, bh * 0.08));
+  let fontSize = Math.max(14, Math.min(bw * 0.3, bh * 0.05));
   ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -473,7 +473,7 @@ function renderVerticalText(ctx, bx, by, bw, bh, text, pad) {
 
 function renderHorizontalText(ctx, bx, by, bw, bh, text, pad) {
   const maxWidth = bw + pad * 2 - 4;
-  let fontSize = Math.max(14, Math.min(bh * 0.12, bw * 0.9));
+  let fontSize = Math.max(14, Math.min(bh * 0.15, bw * 0.06));
   ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
   const metrics = ctx.measureText(text);
   if (metrics.width > maxWidth && metrics.width > 0) {
@@ -561,7 +561,7 @@ async function processImage(inputPath, outputPath) {
   }
 
   // 4. 过滤空结果
-  const validResults = ocrResults.filter(r => r.text.length > 0);
+  const validResults = ocrResults.filter(r => r.text.length > 2 && r.region.width > 50 && r.region.height > 40);
   console.log(`   有效 OCR 结果: ${validResults.length}/${ocrResults.length}`);
   if (validResults.length === 0) return;
 
