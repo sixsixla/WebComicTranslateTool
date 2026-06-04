@@ -7,6 +7,36 @@ const Tesseract = require('tesseract.js');
 const fs = require('fs');
 const path = require('path');
 
+// ==================== 注册 CJK 字体 ====================
+
+const CJK_FONT_FAMILY = 'SimHei';
+
+function registerFonts() {
+  const fontPaths = [
+    'C:/Windows/Fonts/simhei.ttf',
+    'C:/Windows/Fonts/msyh.ttc',
+    'C:/Windows/Fonts/simsun.ttc',
+  ];
+  for (const fp of fontPaths) {
+    if (fs.existsSync(fp)) {
+      try {
+        GlobalFonts.registerFromPath(fp, path.basename(fp, path.extname(fp)));
+        console.log(`注册字体: ${fp}`);
+      } catch (e) {
+        console.log(`字体注册失败: ${fp} - ${e.message}`);
+      }
+    }
+  }
+  // 也尝试注册为通用别名
+  try {
+    if (fs.existsSync('C:/Windows/Fonts/simhei.ttf')) {
+      GlobalFonts.registerFromPath('C:/Windows/Fonts/simhei.ttf', 'CJK');
+    }
+  } catch(e) {}
+}
+
+registerFonts();
+
 // ==================== 配置 ====================
 
 const CONFIG = {
@@ -20,18 +50,28 @@ const CONFIG = {
 // ==================== 翻译 API ====================
 
 async function translateText(text, from = 'ja', to = 'zh-CN') {
-  const params = new URLSearchParams({
-    client: 'gtx', sl: from, tl: to, dt: 't', q: text
-  });
-  const resp = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`);
-  const data = await resp.json();
-  let result = '';
-  if (data && data[0]) {
-    for (const part of data[0]) {
-      if (part[0]) result += part[0];
+  try {
+    const params = new URLSearchParams({
+      client: 'gtx', sl: from, tl: to, dt: 't', q: text
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch(
+      `https://translate.googleapis.com/translate_a/single?${params}`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timer);
+    const data = await resp.json();
+    let result = '';
+    if (data && data[0]) {
+      for (const part of data[0]){
+        if (part[0]) result += part[0];
+      }
     }
+    return result || text;
+  } catch (e) {
+    return `[译]${text}`;
   }
-  return result || text;
 }
 
 // ==================== OCR ====================
@@ -106,6 +146,10 @@ function detectTextRegions(imageData, imgWidth, imgHeight) {
   }
 
   let merged = mergeOverlappingRegions(regions);
+
+  // 碎片合并：将相邻小区域合并成完整文字行
+  merged = mergeIntoTextLines(merged, width);
+
   merged.sort((a, b) => (b.width * b.height) - (a.width * a.height));
   if (merged.length > CONFIG.maxRegions) {
     console.log(`  区域过多 (${merged.length})，截断到 ${CONFIG.maxRegions} 个`);
@@ -242,6 +286,62 @@ function mergeOverlappingRegions(regions) {
   return merged;
 }
 
+/**
+ * 碎片合并：将相邻的小区域合并成完整文字气泡
+ * 支持竖排（日语漫画）和横排两种模式
+ */
+function mergeIntoTextLines(regions, imgWidth) {
+  if (regions.length <= 1) return regions;
+
+  const sorted = [...regions].sort((a, b) => a.y - b.y || a.x - b.x);
+  const merged = [];
+  const used = new Set();
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (used.has(i)) continue;
+
+    let cur = { ...sorted[i] };
+    used.add(i);
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      for (let j = 0; j < sorted.length; j++) {
+        if (used.has(j)) continue;
+        const o = sorted[j];
+
+        // 竖排合并：x重叠且y接近
+        const xOverlap = Math.max(0,
+          Math.min(cur.x + cur.width, o.x + o.width) - Math.max(cur.x, o.x));
+        const yGap = Math.max(cur.y, o.y) - Math.min(cur.y + cur.height, o.y + o.height);
+        const vMerge = xOverlap > Math.min(cur.width, o.width) * 0.3 &&
+                       yGap < Math.max(cur.height, o.height) * 0.8;
+
+        // 横排合并：y重叠且x接近
+        const yOverlap = Math.max(0,
+          Math.min(cur.y + cur.height, o.y + o.height) - Math.max(cur.y, o.y));
+        const xGap = Math.max(cur.x, o.x) - Math.min(cur.x + cur.width, o.x + o.width);
+        const hMerge = yOverlap > Math.min(cur.height, o.height) * 0.3 &&
+                       xGap < Math.max(cur.width, o.width) * 0.6;
+
+        if (vMerge || hMerge) {
+          const nx = Math.min(cur.x, o.x);
+          const ny = Math.min(cur.y, o.y);
+          cur = {
+            x: nx, y: ny,
+            width: Math.max(cur.x + cur.width, o.x + o.width) - nx,
+            height: Math.max(cur.y + cur.height, o.y + o.height) - ny,
+          };
+          used.add(j);
+          changed = true;
+        }
+      }
+    }
+    merged.push(cur);
+  }
+  return merged;
+}
+
 // ==================== 渲染 ====================
 
 function sampleBackgroundColor(imageData, region, imgWidth) {
@@ -280,33 +380,71 @@ function renderTranslation(ctx, region, text, bgColor) {
   ctx.fillStyle = `rgba(${bgColor.r},${bgColor.g},${bgColor.b},0.92)`;
   ctx.fillRect(x - padding, y - padding, width + padding * 2, height + padding * 2);
 
-  // 计算字号 (CJK 至少 12px)
-  const maxWidth = width + padding * 2 - 4;
-  let fontSize = Math.max(12, Math.min(16, height * 0.85));
-  ctx.font = `${fontSize}px "SimHei", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif`;
-  const metrics = ctx.measureText(text);
+  // 判断竖排/横排：高>宽1.5倍 → 竖排（日语漫画标准）
+  const isVertical = height > width * 1.5;
 
+  if (isVertical) {
+    renderVerticalText(ctx, x, y, width, height, text, padding);
+  } else {
+    renderHorizontalText(ctx, x, y, width, height, text, padding);
+  }
+}
+
+function renderVerticalText(ctx, bx, by, bw, bh, text, pad) {
+  let fontSize = Math.max(12, Math.min(16, bw * 0.85));
+  ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const maxCharsPerCol = Math.max(1, Math.floor((bh - pad * 2) / (fontSize * 1.15)));
+  const chars = text.replace(/\s+/g, '').split('');
+  const columns = [];
+  for (let i = 0; i < chars.length; i += maxCharsPerCol) {
+    columns.push(chars.slice(i, i + maxCharsPerCol));
+  }
+
+  const numCols = columns.length;
+  let columnWidth = Math.min(fontSize * 1.3, (bw - pad * 2) / Math.max(numCols, 1));
+  const totalColWidth = numCols * columnWidth;
+  let colX = bx + bw / 2 + totalColWidth / 2 - columnWidth / 2;
+
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillStyle = '#111111';
+
+  for (let ci = 0; ci < numCols; ci++) {
+    const colChars = columns[ci];
+    let charY = by + bh / 2 - ((colChars.length - 1) * fontSize * 1.15) / 2;
+    for (let ri = 0; ri < colChars.length; ri++) {
+      ctx.strokeText(colChars[ri], colX, charY + ri * fontSize * 1.15);
+      ctx.fillText(colChars[ri], colX, charY + ri * fontSize * 1.15);
+    }
+    colX -= columnWidth;
+  }
+}
+
+function renderHorizontalText(ctx, bx, by, bw, bh, text, pad) {
+  const maxWidth = bw + pad * 2 - 4;
+  let fontSize = Math.max(12, Math.min(16, bh * 0.85));
+  ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
+  const metrics = ctx.measureText(text);
   if (metrics.width > maxWidth && metrics.width > 0) {
     fontSize = Math.max(11, fontSize * (maxWidth / metrics.width));
   }
-
-  ctx.font = `${fontSize}px "SimHei", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif`;
+  ctx.font = `${fontSize}px "${CJK_FONT_FAMILY}", sans-serif`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
 
-  const textX = x + width / 2;
-  const textY = y + height / 2;
+  const textX = bx + bw / 2;
+  const textY = by + bh / 2;
   const lines = wrapText(ctx, text, maxWidth);
   let startY = textY - ((lines.length - 1) * fontSize * 0.6);
 
-  // 白色描边
   ctx.strokeStyle = 'rgba(255,255,255,0.85)';
   ctx.lineWidth = 3;
   for (let i = 0; i < lines.length; i++) {
     ctx.strokeText(lines[i], textX, startY + i * fontSize * 1.2);
   }
-
-  // 深色文字
   ctx.fillStyle = '#111111';
   for (let i = 0; i < lines.length; i++) {
     ctx.fillText(lines[i], textX, startY + i * fontSize * 1.2);
@@ -399,6 +537,29 @@ async function processImage(inputPath, outputPath) {
   const pngBuffer = canvas.toBuffer('image/png');
   fs.writeFileSync(outputPath, pngBuffer);
   console.log(`   已保存: ${outputPath}`);
+
+  // 7. 自动化验证 — 中文 OCR 回读输出图
+  console.log('6. 自动化验证...');
+  try {
+    const verifyWorker = await Tesseract.createWorker('chi_sim', 1);
+    const { data: verifyData } = await verifyWorker.recognize(pngBuffer);
+    const chineseChars = (verifyData.text.match(/[\u4e00-\u9fff]/g) || []).length;
+    const verifyConfidence = verifyData.confidence;
+    console.log(`   中文OCR置信度: ${verifyConfidence}%`);
+    console.log(`   检测到中文字符: ${chineseChars} 个`);
+    
+    if (verifyConfidence > 50 && chineseChars > 10) {
+      console.log(`   ✅ 渲染质量: 合格（中文可读）`);
+    } else if (verifyConfidence > 30 || chineseChars > 5) {
+      console.log(`   ⚠️ 渲染质量: 差（可能需要调整字体/字号）`);
+    } else {
+      console.log(`   ❌ 渲染质量: 不合格（中文不可读，可能是字体问题）`);
+    }
+    await verifyWorker.terminate();
+  } catch (e) {
+    console.log(`   验证失败: ${e.message}`);
+  }
+
   console.log('======== 完成 ========\n');
 }
 
