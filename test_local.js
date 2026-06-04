@@ -153,163 +153,166 @@ async function ocrRegionFromBuffer(buffer, width, height, region) {
   return data.text.replace(/\s+/g, '').trim();
 }
 
-// ==================== 文字区域检测 ====================
+
+// ==================== 文字区域检测（气泡优先） ====================
+
+// 先找白色气泡 → 再在气泡内OCR，解决位置偏移问题
 
 function detectTextRegions(imageData, imgWidth, imgHeight) {
   const { data } = imageData;
-  const width = imgWidth;
-  const height = imgHeight;
+  const bubbles = findBubbles(data, imgWidth, imgHeight);
+  
+  // 气泡本身即为文字区域（整块渲染）
+  const regions = bubbles.map(b => ({ x: b.x, y: b.y, width: b.width, height: b.height }));
+  
+  // 去重排序
+  regions.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+  if (regions.length > CONFIG.maxRegions) {
+    console.log('  区域过多 (' + regions.length + ')，截断到 ' + CONFIG.maxRegions + ' 个');
+    return regions.slice(0, CONFIG.maxRegions);
+  }
+  return regions;
+}
+
+// 找白色气泡：遍历图像，对白色像素做泛洪填充
+function findBubbles(data, width, height) {
+  const visited = new Uint8Array(width * height);
+  const bubbles = [];
+  const step = 8; // 每8像素采样一次
+
+  for (let y = 60; y < height - 60; y += step) {
+    for (let x = 60; x < width - 60; x += step) {
+      const idx = y * width + x;
+      if (visited[idx]) continue;
+
+      const pxIdx = idx * 4;
+      const gray = 0.299 * data[pxIdx] + 0.587 * data[pxIdx + 1] + 0.114 * data[pxIdx + 2];
+
+      // 白色/浅色种子
+      if (gray < 230) continue;
+
+      // 泛洪填充
+      const region = floodFill(data, width, height, visited, x, y, 220);
+      if (!region) continue;
+
+      // 过滤：面积够大但不超过整页的40%
+      const area = region.width * region.height;
+      if (area < 8000 || area > width * height * 0.5) continue;
+      // 宽高都不小于60px
+      if (region.width < 60 || region.height < 60) continue;
+      // 区域内白色占比>70%（确保是气泡不是杂色区域）
+      if (region.whiteRatio < 0.7) continue;
+
+      bubbles.push(region);
+    }
+  }
+
+  // 合并重叠的气泡
+  return mergeOverlapping(bubbles);
+}
+
+// 泛洪填充白色区域
+function floodFill(data, width, height, visited, sx, sy, threshold) {
+  const stack = [[sx, sy]];
+  let minX = sx, minY = sy, maxX = sx, maxY = sy;
+  let totalPx = 0, whitePx = 0;
+
+  while (stack.length > 0) {
+    const [x, y] = stack.pop();
+    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+    const idx = y * width + x;
+    if (visited[idx]) continue;
+
+    const pxIdx = idx * 4;
+    const gray = 0.299 * data[pxIdx] + 0.587 * data[pxIdx + 1] + 0.114 * data[pxIdx + 2];
+    if (gray < threshold) continue;
+
+    visited[idx] = 1;
+    totalPx++;
+    if (gray > 235) whitePx++;
+
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+
+    stack.push([x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]);
+  }
+
+  if (minX === maxX || minY === maxY) return null;
+
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+
+  return {
+    x: minX, y: minY, width: w, height: h,
+    area: w * h,
+    whiteRatio: totalPx > 0 ? whitePx / totalPx : 0,
+  };
+}
+
+// 简化：气泡本身即为文字区域
+function findTextInBubble_OLD(data, width, height, bubble) {
   const regions = [];
-  const blockSize = CONFIG.blockSize;
-  const visited = new Uint8Array(Math.ceil(width / blockSize) * Math.ceil(height / blockSize));
+  const blockSize = 24;
+  const bx = bubble.x, by = bubble.y, bw = bubble.width, bh = bubble.height;
 
-  for (let by = 0; by < height; by += blockSize) {
-    for (let bx = 0; bx < width; bx += blockSize) {
-      const blockIdx = Math.floor(by / blockSize) * Math.ceil(width / blockSize) + Math.floor(bx / blockSize);
-      if (visited[blockIdx]) continue;
+  for (let y = by; y < by + bh - blockSize; y += blockSize / 2) {
+    for (let x = bx; x < bx + bw - blockSize; x += blockSize / 2) {
+      let darkCount = 0, totalCount = 0;
+      const endY = Math.min(y + blockSize, by + bh);
+      const endX = Math.min(x + blockSize, bx + bw);
 
-      let pixelCount = 0;
-      const blockEndY = Math.min(by + blockSize, height);
-      const blockEndX = Math.min(bx + blockSize, width);
-
-      for (let y = by; y < blockEndY; y++) {
-        for (let x = bx; x < blockEndX; x++) {
-          const idx = (y * width + x) * 4;
-          const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-          if (gray < 80) pixelCount++;
+      for (let py = y; py < endY; py++) {
+        for (let px = x; px < endX; px++) {
+          const idx = (py * width + px) * 4;
+          if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 80) darkCount++;
+          totalCount++;
         }
       }
 
-      const totalPixels = (blockEndY - by) * (blockEndX - bx);
-      const darkRatio = pixelCount / totalPixels;
+      if (darkCount > totalCount * 0.03 && darkCount < totalCount * 0.5) {
+        // 扩展区域
+        let minX = x, minY = y, maxX = endX, maxY = endY;
+        let expanded = true, steps = 0;
+        while (expanded && steps < 8) {
+          expanded = false; steps++;
+          // 4方向扩展
+          if (minY > by && hasDarkInRow(data, width, minY - 1, minX, maxX)) { minY--; expanded = true; }
+          if (maxY < by + bh && hasDarkInRow(data, width, maxY, minX, maxX)) { maxY++; expanded = true; }
+          if (minX > bx && hasDarkInCol(data, width, minX - 1, minY, maxY)) { minX--; expanded = true; }
+          if (maxX < bx + bw && hasDarkInCol(data, width, maxX, minY, maxY)) { maxX++; expanded = true; }
+        }
 
-      if (darkRatio > 0.05 && darkRatio < 0.5) {
-        const region = expandTextRegion(data, width, height, bx, by, blockEndX, blockEndY);
-        if (region) {
-          regions.push(region);
-          markVisitedBlocks(visited, region, blockSize, width);
+        const rw = maxX - minX, rh = maxY - minY;
+        if (rw > 20 && rh > 15 && rw < bw * 0.95 && rh < bh * 0.95) {
+          regions.push({ x: minX, y: minY, width: rw, height: rh });
         }
       }
     }
   }
 
-  let merged = mergeOverlappingRegions(regions);
-
-  // 碎片合并：将相邻小区域合并成完整文字行
-  merged = mergeIntoTextLines(merged, width);
-
-  merged.sort((a, b) => (b.width * b.height) - (a.width * a.height));
-  if (merged.length > CONFIG.maxRegions) {
-    console.log(`  区域过多 (${merged.length})，截断到 ${CONFIG.maxRegions} 个`);
-    merged = merged.slice(0, CONFIG.maxRegions);
-  }
-  return merged;
+  return mergeOverlapping(regions);
 }
 
-function expandTextRegion(data, width, height, startX, startY, endX, endY) {
-  let minX = startX, minY = startY, maxX = endX, maxY = endY;
-  let expanded = true;
-  let steps = 0;
-
-  while (expanded && steps < 10) {
-    expanded = false; steps++;
-
-    if (minY > 0) {
-      let hasDark = false;
-      for (let x = minX; x < maxX; x++) {
-        const idx = ((minY - 1) * width + x) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) { hasDark = true; break; }
-      }
-      if (hasDark) { minY--; expanded = true; }
-    }
-    if (maxY < height) {
-      let hasDark = false;
-      for (let x = minX; x < maxX; x++) {
-        const idx = (maxY * width + x) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) { hasDark = true; break; }
-      }
-      if (hasDark) { maxY++; expanded = true; }
-    }
-    if (minX > 0) {
-      let hasDark = false;
-      for (let y = minY; y < maxY; y++) {
-        const idx = (y * width + (minX - 1)) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) { hasDark = true; break; }
-      }
-      if (hasDark) { minX--; expanded = true; }
-    }
-    if (maxX < width) {
-      let hasDark = false;
-      for (let y = minY; y < maxY; y++) {
-        const idx = (y * width + maxX) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) { hasDark = true; break; }
-      }
-      if (hasDark) { maxX++; expanded = true; }
-    }
+function hasDarkInRow(data, width, y, x1, x2) {
+  for (let x = x1; x < x2; x++) {
+    const idx = (y * width + x) * 4;
+    if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) return true;
   }
-
-  const rw = maxX - minX, rh = maxY - minY;
-  if (rw < 10 || rh < 8) return null;
-  if (rw > width * 0.9 && rh > height * 0.9) return null;
-
-  // 气泡白底检查
-  if (!isLikelyBubble(data, width, height, { x: minX, y: minY, width: rw, height: rh })) return null;
-
-  return { x: minX, y: minY, width: rw, height: rh };
+  return false;
 }
 
-function isLikelyBubble(data, width, height, region) {
-  const { x, y, width: rw, height: rh } = region;
-  const border = 6;
-  let whiteCount = 0, totalCount = 0;
-
-  for (let sx = Math.max(0, x - border); sx < Math.min(width, x + rw + border); sx++) {
-    for (let dy = 0; dy < border; dy++) {
-      const ty = y - border + dy;
-      if (ty >= 0) {
-        const idx = (ty * width + sx) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
-        totalCount++;
-      }
-      const by = y + rh + dy;
-      if (by < height) {
-        const idx = (by * width + sx) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
-        totalCount++;
-      }
-    }
+function hasDarkInCol(data, width, x, y1, y2) {
+  for (let y = y1; y < y2; y++) {
+    const idx = (y * width + x) * 4;
+    if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] < 100) return true;
   }
-  for (let sy = y; sy < y + rh; sy++) {
-    for (let dx = 0; dx < border; dx++) {
-      const lx = x - border + dx;
-      if (lx >= 0) {
-        const idx = (sy * width + lx) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
-        totalCount++;
-      }
-      const rx = x + rw + dx;
-      if (rx < width) {
-        const idx = (sy * width + rx) * 4;
-        if (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2] > 220) whiteCount++;
-        totalCount++;
-      }
-    }
-  }
-  return totalCount > 0 && (whiteCount / totalCount) > 0.6;
+  return false;
 }
 
-function markVisitedBlocks(visited, region, blockSize, imageWidth) {
-  const bpr = Math.ceil(imageWidth / blockSize);
-  const sbx = Math.floor(region.x / blockSize), sby = Math.floor(region.y / blockSize);
-  const ebx = Math.floor((region.x + region.width) / blockSize), eby = Math.floor((region.y + region.height) / blockSize);
-  for (let by = sby; by <= eby; by++)
-    for (let bx = sbx; bx <= ebx; bx++) {
-      const idx = by * bpr + bx;
-      if (idx < visited.length) visited[idx] = 1;
-    }
-}
-
-function mergeOverlappingRegions(regions) {
+function mergeOverlapping(regions) {
   if (regions.length <= 1) return regions;
   regions.sort((a, b) => (b.width * b.height) - (a.width * a.height));
   const merged = [];
@@ -333,63 +336,6 @@ function mergeOverlappingRegions(regions) {
   }
   return merged;
 }
-
-/**
- * 碎片合并：将相邻的小区域合并成完整文字气泡
- * 支持竖排（日语漫画）和横排两种模式
- */
-function mergeIntoTextLines(regions, imgWidth) {
-  if (regions.length <= 1) return regions;
-
-  const sorted = [...regions].sort((a, b) => a.y - b.y || a.x - b.x);
-  const merged = [];
-  const used = new Set();
-
-  for (let i = 0; i < sorted.length; i++) {
-    if (used.has(i)) continue;
-
-    let cur = { ...sorted[i] };
-    used.add(i);
-    let changed = true;
-
-    while (changed) {
-      changed = false;
-      for (let j = 0; j < sorted.length; j++) {
-        if (used.has(j)) continue;
-        const o = sorted[j];
-
-        // 竖排合并：x重叠且y接近
-        const xOverlap = Math.max(0,
-          Math.min(cur.x + cur.width, o.x + o.width) - Math.max(cur.x, o.x));
-        const yGap = Math.max(cur.y, o.y) - Math.min(cur.y + cur.height, o.y + o.height);
-        const vMerge = xOverlap > Math.min(cur.width, o.width) * 0.3 &&
-                       yGap < Math.max(cur.height, o.height) * 0.8;
-
-        // 横排合并：y重叠且x接近
-        const yOverlap = Math.max(0,
-          Math.min(cur.y + cur.height, o.y + o.height) - Math.max(cur.y, o.y));
-        const xGap = Math.max(cur.x, o.x) - Math.min(cur.x + cur.width, o.x + o.width);
-        const hMerge = yOverlap > Math.min(cur.height, o.height) * 0.3 &&
-                       xGap < Math.max(cur.width, o.width) * 0.6;
-
-        if (vMerge || hMerge) {
-          const nx = Math.min(cur.x, o.x);
-          const ny = Math.min(cur.y, o.y);
-          cur = {
-            x: nx, y: ny,
-            width: Math.max(cur.x + cur.width, o.x + o.width) - nx,
-            height: Math.max(cur.y + cur.height, o.y + o.height) - ny,
-          };
-          used.add(j);
-          changed = true;
-        }
-      }
-    }
-    merged.push(cur);
-  }
-  return merged;
-}
-
 // ==================== 渲染 ====================
 
 function sampleBackgroundColor(imageData, region, imgWidth) {
