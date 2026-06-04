@@ -50,28 +50,33 @@ const CONFIG = {
 // ==================== 翻译 API ====================
 
 async function translateText(text, from = 'ja', to = 'zh-CN') {
+  // 方案1: Google
   try {
-    const params = new URLSearchParams({
-      client: 'gtx', sl: from, tl: to, dt: 't', q: text
-    });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const resp = await fetch(
-      `https://translate.googleapis.com/translate_a/single?${params}`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timer);
+    const params = new URLSearchParams({ client: 'gtx', sl: from, tl: to, dt: 't', q: text });
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 5000);
+    const resp = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`, { signal: c.signal });
+    clearTimeout(t);
     const data = await resp.json();
     let result = '';
-    if (data && data[0]) {
-      for (const part of data[0]){
-        if (part[0]) result += part[0];
-      }
-    }
-    return result || text;
-  } catch (e) {
-    return text; // API不通时直接返回原文
-  }
+    if (data?.[0]) for (const p of data[0]) if (p[0]) result += p[0];
+    if (result && result !== text) return result;
+  } catch (e) {}
+
+  // 方案2: MyMemory (免费，无需API Key)
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 8000);
+    const resp = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${from}|${to}`,
+      { signal: c.signal }
+    );
+    clearTimeout(t);
+    const data = await resp.json();
+    if (data?.responseData?.translatedText) return data.responseData.translatedText;
+  } catch (e) {}
+
+  return text;
 }
 
 // ==================== OCR ====================
