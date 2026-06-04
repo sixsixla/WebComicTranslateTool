@@ -44,34 +44,66 @@ const CONFIG = {
   translateFrom: 'ja',      // 翻译源语言代码
   translateTo: 'zh-CN',     // 翻译目标语言
   blockSize: 40,            // 文字检测块大小
-  maxRegions: 60,           // 最大处理区域数
+  maxRegions: 60,
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
 };
 
 // ==================== 翻译 API ====================
 
+
+// DeepSeek 翻译（质量远超 MyMemory）
+async function translateWithDeepSeek(text, from, to) {
+  if (!CONFIG.deepseekApiKey) return null;
+  const resp = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + CONFIG.deepseekApiKey,
+    },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [{
+        role: 'system',
+        content: '你是漫画翻译助手。将日语翻译成自然流畅的中文。只输出翻译，不要解释、不要注音、不要括号。保持原文语气。'
+      }, {
+        role: 'user',
+        content: text
+      }],
+      temperature: 0.3,
+      max_tokens: 500,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await resp.json();
+  if (data?.choices?.[0]?.message?.content) {
+    return data.choices[0].message.content.trim();
+  }
+  return null;
+}
+
+
 async function translateText(text, from = 'ja', to = 'zh-CN') {
-  // 方案1: Google
+  // 方案1: DeepSeek（最佳质量）
+  if (CONFIG.deepseekApiKey) {
+    try {
+      const result = await translateWithDeepSeek(text, from, to);
+      if (result) return result;
+    } catch (e) {}
+  }
+
+  // 方案2: Google
   try {
     const params = new URLSearchParams({ client: 'gtx', sl: from, tl: to, dt: 't', q: text });
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 5000);
-    const resp = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`, { signal: c.signal });
-    clearTimeout(t);
+    const resp = await fetch('https://translate.googleapis.com/translate_a/single?' + params, { signal: AbortSignal.timeout(5000) });
     const data = await resp.json();
     let result = '';
     if (data?.[0]) for (const p of data[0]) if (p[0]) result += p[0];
     if (result && result !== text) return result;
   } catch (e) {}
 
-  // 方案2: MyMemory (免费，无需API Key)
+  // 方案3: MyMemory
   try {
-    const c = new AbortController();
-    const t = setTimeout(() => c.abort(), 8000);
-    const resp = await fetch(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${from}|${to}`,
-      { signal: c.signal }
-    );
-    clearTimeout(t);
+    const resp = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) + '&langpair=' + from + '|' + to, { signal: AbortSignal.timeout(8000) });
     const data = await resp.json();
     if (data?.responseData?.translatedText) return data.responseData.translatedText;
   } catch (e) {}
