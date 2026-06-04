@@ -39,14 +39,25 @@ registerFonts();
 
 // ==================== 配置 ====================
 
-const CONFIG = {
+const CONFIG = loadConfig();
+const _CONFIG_DEFAULTS = {
   sourceLang: 'jpn',       // OCR 源语言
   translateFrom: 'ja',      // 翻译源语言代码
   translateTo: 'zh-CN',     // 翻译目标语言
   blockSize: 40,            // 文字检测块大小
   maxRegions: 60,
-  deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
+  deepseekApiKey: '',
 };
+
+function loadConfig() {
+  try {
+    const user = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
+    return { ..._CONFIG_DEFAULTS, ...user };
+  } catch(e) {
+    console.log('config.json 未找到或格式错误，使用默认配置');
+    return _CONFIG_DEFAULTS;
+  }
+}
 
 // ==================== 翻译 API ====================
 
